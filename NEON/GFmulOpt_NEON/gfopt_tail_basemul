@@ -1,0 +1,251 @@
+#define TESTS_PER_ITER 10000
+#define STRING_MAXLEN 100
+#define N_TEST_BASEMUL 1000000
+
+#define MIN_LEN_1 2
+#define MIN_LEN_2 3
+#define MIN_LEN_3 5
+#define MIN_LEN_4 13
+#define MIN_LEN_5 8
+
+//C는 A, B와 달라야 함
+static inline void schoolbook_basemul(poly8x16_t* C, poly8x16_t* A, poly8x16_t* B)
+{
+    uint64_t * pa, * pb, * pc;
+    uint64_t tmp;
+    pa = (uint64_t *)(A);
+    pb = (uint64_t *)(B);
+    pc = (uint64_t *)(C);
+    memset(pc, 0, sizeof(uint64_t) * 4);
+    for (size_t j = 0; j < 2; ++j) 
+    {        
+        tmp = -(pb[j] & 0x1); 
+        for (size_t k = 0; k < 2; ++k)
+        {
+            pc[k + j] ^= pa[k] & tmp;
+        }
+        for (size_t i = 1; i < 64; ++i)
+        {
+            tmp = -((pb[j] >> i) & 0x1);
+            for (size_t k = 0; k < 2; ++k)
+            {
+                pc[k + j] ^= (pa[k] << i) & tmp;
+                pc[k + j + 1] ^= (pa[k] >> (64 - i)) & tmp;
+            }
+        }
+    }
+}
+
+static inline void karat_128_NEON(poly8x16_t* Out, poly8x16_t* a, poly8x16_t* b){
+	poly8x8_t al, ah, bl, bh;
+    poly8x8_t alpah, blpbh;
+    poly8x16_t D0={0}, D1={0}, D2={0};
+
+    ah = vget_high_p8(*a);
+	al = vget_low_p8(*a);
+    bh = vget_high_p8(*b);
+	bl = vget_low_p8(*b);
+
+    alpah=vadd_p8(al,ah);
+    blpbh=vadd_p8(bl,bh);
+    // schmul64_NEON(&D1, &alpah, &blpbh);
+    // schmul64_NEON(&D0, &al, &bl);
+    // schmul64_NEON(&D2, &ah, &bh);
+    D1 = (poly8x16_t)vmull64_a72(*(uint64_t *)&alpah, *(uint64_t *)&blpbh);
+    D0 = (poly8x16_t)vmull64_a72(*(uint64_t *)&al, *(uint64_t *)&bl);
+    D2 = (poly8x16_t)vmull64_a72(*(uint64_t *)&ah, *(uint64_t *)&bh);
+
+    D1=vaddq_p8(D1,D0);
+    D1=vaddq_p8(D1,D2);
+
+    Out[0]=vcombine_p8(vget_low_p8(D0),vadd_p8(vget_high_p8(D0),vget_low_p8(D1)));
+    Out[1]=vcombine_p8(vadd_p8(vget_low_p8(D2),vget_high_p8(D1)),vget_high_p8(D2));
+}
+
+static inline void SB_128_NEON(poly8x16_t* Out, poly8x16_t* a, poly8x16_t* b){
+
+	poly8x8_t al, ah, bl, bh;
+    poly8x16_t D0={0}, D1={0}, D2={0};
+
+    ah = vget_high_p8(*a);
+	al = vget_low_p8(*a);
+    bh = vget_high_p8(*b);
+	bl = vget_low_p8(*b);
+
+    // schmul64_NEON(&D0, &al, &bh);
+    // schmul64_NEON(&D1, &ah, &bl);
+    
+    D0 = (poly8x16_t)vmull64_a72(*(uint64_t *)&al, *(uint64_t *)&bh);
+    D1 = (poly8x16_t)vmull64_a72(*(uint64_t *)&ah, *(uint64_t *)&bl);
+
+    D1=vaddq_p8(D0,D1);
+
+    // schmul64_NEON(&D0, &al, &bl);
+    // schmul64_NEON(&D2, &ah, &bh);
+    D0 = (poly8x16_t)vmull64_a72(*(uint64_t *)&al, *(uint64_t *)&bl);
+    D2 = (poly8x16_t)vmull64_a72(*(uint64_t *)&ah, *(uint64_t *)&bh);
+
+    Out[0]=vcombine_p8(vget_low_p8(D0),vadd_p8(vget_high_p8(D0),vget_low_p8(D1)));
+    Out[1]=vcombine_p8(vadd_p8(vget_low_p8(D2),vget_high_p8(D1)),vget_high_p8(D2));
+}
+
+#define ALG_CNT 2
+int main(){
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);      // CPU 집합 초기화
+    CPU_SET(0, &cpuset);    // CPU 0번을 집합에 추가
+
+    pid_t pid = getpid();
+    if (sched_setaffinity(pid, sizeof(cpu_set_t), &cpuset) == -1) {
+        perror("sched_setaffinity");
+        exit(EXIT_FAILURE);
+    }
+    
+    char alg_str[ALG_CNT][STRING_MAXLEN];
+    strcpy(alg_str[0],"karat_128_NEON");
+    strcpy(alg_str[1],"SB_128_NEON");
+    void (*func_p[ALG_CNT])(poly8x16_t *, poly8x16_t *, poly8x16_t *);
+    func_p[0] = karat_128_NEON;
+    func_p[1] = SB_128_NEON;
+    poly8x16_t A[TESTS_PER_ITER],B[TESTS_PER_ITER];
+    poly8x16_t C_sch[TESTS_PER_ITER * 2];
+    poly8x16_t C[ALG_CNT][TESTS_PER_ITER * 2]; //크게 잡아서 일차원으로 바꾸기
+    
+    volatile uint64_t start, fin, t_basemul[ALG_CNT], t_tmp, fail_cnt[ALG_CNT] = {0,}, fail_total = 0;
+    uint64_t t_measure = cc_overhead();
+
+    uint8_t best_basemul;
+    char best_alg_str[STRING_MAXLEN];
+
+    printf("\n============basemul============\n\nN_TEST_BASEMUL=%d\n\n",N_TEST_BASEMUL);
+    for(size_t iter=0; iter<N_TEST_BASEMUL/(TESTS_PER_ITER*100); iter++){        
+        random_wordstring_poly8x16(A,TESTS_PER_ITER);
+        random_wordstring_poly8x16(B,TESTS_PER_ITER);
+        
+        for(size_t j=0;j<TESTS_PER_ITER;j++){
+            schoolbook_basemul(&C_sch[2*j], &A[j], &B[j]);
+        }
+
+        for(size_t i=0;i<ALG_CNT;i++){
+            start = get_cc();
+            for(size_t j=0;j<TESTS_PER_ITER;j++){
+                func_p[i](&C[i][2*j], &A[j], &B[j]);
+            }
+            fin = get_cc();
+            if(poly_compare_8x16(C_sch, C[i], TESTS_PER_ITER * 2)) fail_cnt[i]++;
+        }
+    }
+    for(int iter=0; iter<N_TEST_BASEMUL/TESTS_PER_ITER; iter++){
+        random_wordstring_poly8x16(A,TESTS_PER_ITER);
+        random_wordstring_poly8x16(B,TESTS_PER_ITER);
+        
+        for(size_t j=0;j<TESTS_PER_ITER;j++){
+            schoolbook_basemul(&C_sch[2*j], &A[j], &B[j]);
+        }
+
+        for(size_t i=0;i<ALG_CNT;i++){
+            start=get_cc();
+            for(size_t j=0;j<TESTS_PER_ITER;j++){
+                func_p[i](&C[i][2*j], &A[j], &B[j]);
+            }
+            fin = get_cc();
+            t_basemul[i] += fin - start - t_measure;
+            if(poly_compare_8x16(C_sch, C[i], TESTS_PER_ITER * 2)) fail_cnt[i]++;
+        }
+    }
+
+    for(size_t i=0;i<ALG_CNT;i++){
+        printf("%s..\n\t%.2f\n", alg_str[i], (double)t_basemul[i]/(N_TEST_BASEMUL));
+        fail_total += fail_cnt[i];
+    }
+    printf("\nfail_total = %ld\n",fail_total);
+    if(fail_total){
+        for(size_t i=0;i<ALG_CNT;i++){
+            if(fail_cnt[i]) printf("basemul: %s fail, fail_cnt = %ld\n", alg_str[i], fail_cnt[i]);
+        }
+        return -1;
+    }
+    t_tmp=t_basemul[0];
+    best_basemul=0;
+    strcpy(best_alg_str, alg_str[best_basemul]);
+    for(size_t i=1;i<ALG_CNT;i++){
+        if(t_basemul[i] < t_tmp) {
+            t_tmp = t_basemul[i];
+            best_basemul = i;
+            strcpy(best_alg_str, alg_str[best_basemul]);
+        }
+    }
+    best_alg_set(GFLEN, best_basemul, ENV_NUM);
+    printf("best basemul: %s\n", best_alg_str);
+    
+    printf("\n============polymul============\n\n");
+
+    FILE* fpw1 = fopen("./gfopt_head", "ab");
+
+/////////////////////////////////////////////////////
+//Generate code for the best algorithm
+    fprintf(fpw1,"#define gfmul_1(O,A,B) %s((O), (A), (B))\n\n",best_alg_str);
+    switch(best_basemul){
+    case 0:
+        fprint_karat_128_NEON(fpw1,best_alg_str);
+        break;
+    case 1:
+        fprint_SB_128_NEON(fpw1,best_alg_str);
+        break;
+    default:
+        printf("err.. best_basemul = %d",best_basemul);
+        return -1;
+        break;
+    }
+    fclose(fpw1);
+//Generate possible algorithm code for the next dimension
+    FILE* fpw2 = fopen("./gfopt_middle","wb");
+    fprint_karat2(fpw2, "karat2", 2);
+    fclose(fpw2);
+
+//Create gfopt_len_N.c by Combine gfopt_head, gfopt_head, gfopt_tail
+    char str[STRING_MAXLEN];
+    sprintf(str,"./src/gfopt_len_2.c");
+
+    FILE* fpr_1 = fopen("./gfopt_head", "rb");
+    FILE* fpr_2 = fopen("./gfopt_middle", "rb");
+    FILE* fpr_3 = fopen("./gfopt_tail", "rb");
+	FILE* fpw = fopen(str, "ab");
+    char file;
+    fprintf(fpw,"#define GFLEN 2\n");
+
+	while (!feof(fpr_1))
+	{
+		if(fread(&file, 1, 1, fpr_1)!=1) break;
+		fwrite(&file, 1, 1, fpw);
+	}
+    fclose(fpr_1);
+	while (!feof(fpr_2))
+	{
+		if(fread(&file, 1, 1, fpr_2)!=1) break;
+		fwrite(&file, 1, 1, fpw);
+	}
+    fclose(fpr_2);
+	while (!feof(fpr_3))
+	{
+		if(fread(&file, 1, 1, fpr_3)!=1) break;
+		fwrite(&file, 1, 1, fpw);
+	}
+    fclose(fpr_3);
+	fclose(fpw);
+
+//Compile and run the file gfopt_len_(N+1).c
+    char strsys1[1000];
+    char strsys2[1000];
+    sprintf(strsys1,"gcc ./src/gfopt_len_%d.c ./tools.c -o ./src/gfopt_len_%d -O3 -std=c99 -funroll-all-loops  -pedantic -Wall -Wextra -DENV_NEON",GFLEN+1,GFLEN+1);
+    sprintf(strsys2,"./src/gfopt_len_%d",GFLEN+1);
+    if(system(strsys1)) printf("./src/gfopt_len_%d.c compile err\n",GFLEN+1);    
+    clock_t sleep_t=clock();
+    while(1){
+        if((clock()-sleep_t)/CLOCKS_PER_SEC >= 1) break;
+    }
+    if(system(strsys2)) printf("./src/gfopt_len_%d err\n",GFLEN+1);
+
+    return 0;
+    
+} 

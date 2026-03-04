@@ -1,0 +1,205 @@
+#define _GNU_SOURCE
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include "../gfopt.h"
+#include <arm_neon.h>
+#include "../best_alg/best_alg_result_NEON.h"
+
+#include <unistd.h>
+#include <sched.h>
+
+
+void random_wordstring_poly8x16(poly8x16_t *a, long n)
+{
+    long i;
+    for (i = 0; i < n; i++)
+      {
+        uint64_t r1, r2;
+	    r1 = rand() | (rand() << 31);
+        if (sizeof (long) > sizeof (int)){
+            r1 = (r1 << 31) | rand();
+        }
+	    r2 = rand() | (rand() << 31);
+        if (sizeof (long) > sizeof (int)){
+            r2 = (r2 << 31) | rand();
+        }
+        a[i] = vcombine_p8(vcreate_p8(r1),vcreate_p8(r2));
+      }
+}
+
+static inline  uint64_t get_cc(void)
+{
+    uint64_t val;
+    __asm__ volatile("isb;mrs %0, pmccntr_el0" : "=r"(val));
+    return val;
+}
+uint64_t cc_overhead(void) {
+    uint64_t t0, t1, overhead = 0;
+    unsigned int i;
+
+    for(i=0;i<100000;i++) {
+        t0 = get_cc();
+        __asm__ volatile("");
+        t1 = get_cc();
+        overhead += t1 - t0;
+    }
+    return overhead/100000;
+}
+
+int poly_compare_8x16(poly8x16_t *A,poly8x16_t *B,int64_t len){
+	int64_t *a=(int64_t *)A;
+	int64_t *b=(int64_t *)B;
+    int ret=0;
+	for(int i=0;i<2*len;i++){
+		if(a[i]!=b[i]) {
+            printf("%d : \n Csch[%d] = %016lx\n C1  [%d] = %016lx\n\n",i,i,a[i],i,b[i]);
+            ret = -1;
+        }
+    }
+	return ret;
+}
+
+static inline void divide_by_x_plus_one_64(poly8x16_t *out,poly8x16_t *in,int32_t size){ 
+    uint64_t *A = (uint64_t *) in;
+ 	uint64_t *B = (uint64_t *) out;
+    
+    B[0] = A[0];
+ 	for(int32_t i = 1; i < size; i++) {
+ 		B[i] = B[i - 1] ^ A[i];
+ 	}
+}
+
+static inline void divide_by_x_plus_one_128(poly8x16_t *in, poly8x16_t *out, int32_t size) {
+    out[0] = in[0];	
+    for(int32_t i = 1 ; i < size ; i++) {
+        out[i] = out[i - 1] ^ in[i];
+    }
+}
+// static inline void schmul64_NEON(poly8x16_t* res, poly8x8_t* a, poly8x8_t* b){
+//     poly8x8_t a_shift, b_shift;
+//     poly8x16_t poly_tmp1, poly_tmp2, poly_res;
+//     poly8x8_t *p1, *p2;
+//     uint8x8_t mask1={0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0,0};
+//     uint8x8_t mask2={0xFF,0xFF,0xFF,0xFF,    0,   0,0,0};
+//     uint8x8_t mask3={0xFF,0xFF,   0,   0,    0,   0,0,0};
+    
+//     poly_res=vreinterpretq_p8_p16(vmull_p8(*a,*b));
+    
+//     a_shift=vext_p8(*a,*a,1);
+//     b_shift=vext_p8(*b,*b,1);
+//     poly_tmp1=vreinterpretq_p8_p16(vmull_p8(*a,b_shift));
+//     poly_tmp2=vreinterpretq_p8_p16(vmull_p8(a_shift,*b));
+//     poly_tmp1=vaddq_p8(poly_tmp1,poly_tmp2);
+//     p1=(poly8x8_t*)&poly_tmp1;
+//     p2=((poly8x8_t*)&poly_tmp1)+1;
+//     *p1=vadd_p8(*p1, *p2);
+    
+//     *p2=vreinterpret_p8_u8(vand_u8(vreinterpret_u8_p8(*p2), mask1));
+//     *p1=vadd_p8(*p1, *p2);
+//     poly_tmp1=vextq_p8(poly_tmp1,poly_tmp1,15);
+
+//     poly_res=vaddq_p8(poly_res, poly_tmp1);
+
+//     a_shift=vext_p8(a_shift,a_shift,1);
+//     b_shift=vext_p8(b_shift,b_shift,1);
+//     poly_tmp1=vreinterpretq_p8_p16(vmull_p8(*a,b_shift));
+//     poly_tmp2=vreinterpretq_p8_p16(vmull_p8(a_shift,*b));
+//     poly_tmp1=vaddq_p8(poly_tmp1,poly_tmp2);
+//     *p1=vadd_p8(*p1, *p2);
+//     *p2=vreinterpret_p8_u8(vand_u8(vreinterpret_u8_p8(*p2), mask2));
+//     *p1=vadd_p8(*p1, *p2);
+//     poly_tmp1=vextq_p8(poly_tmp1,poly_tmp1,14);
+    
+//     poly_res=vaddq_p8(poly_res, poly_tmp1);
+    
+//     a_shift=vext_p8(a_shift,a_shift,1);
+//     b_shift=vext_p8(b_shift,b_shift,1);
+    
+//     poly_tmp1=vreinterpretq_p8_p16(vmull_p8(*a,b_shift));
+//     poly_tmp2=vreinterpretq_p8_p16(vmull_p8(a_shift,*b));
+//     poly_tmp1=vaddq_p8(poly_tmp1,poly_tmp2);
+//     *p1=vadd_p8(*p1, *p2);
+//     *p2=vreinterpret_p8_u8(vand_u8(vreinterpret_u8_p8(*p2), mask3));
+//     *p1=vadd_p8(*p1, *p2);
+//     poly_tmp1=vextq_p8(poly_tmp1,poly_tmp1,13);
+    
+//     poly_res=vaddq_p8(poly_res, poly_tmp1);
+
+//     b_shift=vext_p8(b_shift,b_shift,1);
+//     poly_tmp1=vreinterpretq_p8_p16(vmull_p8(*a,b_shift));
+//     *p1=vadd_p8(*p1, *p2);
+//     *p2=vadd_p8(*p2, *p2);
+//     poly_tmp1=vextq_p8(poly_tmp1,poly_tmp1,12);
+    
+//     *res = vaddq_p8(poly_res, poly_tmp1);
+// }
+
+
+  
+static inline poly128_t vmull64_a72(const uint64_t a_64, const uint64_t b_64)
+{
+    const poly8x8_t a = vreinterpret_p8_u64(vdup_n_u64(a_64));
+
+    const poly8x8_t b = vreinterpret_p8_u64(vdup_n_u64(b_64));
+
+    poly8x8_t a_1 = vext_p8(a, a, 1);
+    poly8x8_t a_2 = vext_p8(a, a, 2);
+    poly8x8_t a_3 = vext_p8(a, a, 3);
+    poly8x8_t b_1 = vext_p8(b, b, 1);
+    poly8x8_t b_2 = vext_p8(b, b, 2);
+    poly8x8_t b_3 = vext_p8(b, b, 3);
+    poly8x8_t b_4 = vext_p8(b, b, 4);
+    poly16x8_t d = vmull_p8(a, b);
+    uint64_t k_48 = 0x0000FFFFFFFFFFFF;
+    poly16x8_t L = vaddq_p16(vmull_p8(a, b_1), vmull_p8(a_1, b));
+    poly16x4_t result_high = vget_high_p16(L);
+    poly16x4_t result_low = vget_low_p16(L);
+    result_low = vadd_p16(result_high, result_low);
+    result_high = vreinterpret_p16_u16(vand_u16(vreinterpret_u16_p16(result_high), vreinterpret_u16_u64(vdup_n_u64(k_48))));
+    result_low = vadd_p16(result_high, result_low);
+    poly8x16_t temp_result = vreinterpretq_p8_p16(vcombine_p16(result_low, result_high));
+    temp_result = vextq_p8(temp_result, temp_result, 15);
+
+
+    poly16x8_t result = vaddq_p16( d, vreinterpretq_p16_p8(temp_result));
+
+
+    poly16x8_t M = vaddq_p16(vmull_p8(a, b_2), vmull_p8(a_2, b));
+    uint64_t k_32 = 0x00000000FFFFFFFF;
+    result_high = vget_high_p16(M);
+    result_low = vget_low_p16(M);
+    result_low = vadd_p16(result_high, result_low);
+    result_high = vreinterpret_p16_u16(vand_u16(vreinterpret_u16_p16(result_high), vreinterpret_u16_u64(vdup_n_u64(k_32))));
+    result_low = vadd_p16(result_high, result_low);
+    temp_result = vreinterpretq_p8_p16(vcombine_p16(result_low, result_high));
+    temp_result = vextq_p8(temp_result, temp_result, 14);
+    result = vaddq_p16(result, vreinterpretq_p16_p8(temp_result));
+
+    poly16x8_t N = vaddq_p16(vmull_p8(a, b_3), vmull_p8(a_3, b));
+    uint64_t k_16 = 0x000000000000FFFF;
+    result_high = vget_high_p16(N);
+    result_low = vget_low_p16(N);
+    result_low = vadd_p16(result_high, result_low);
+    result_high = vreinterpret_p16_u16(vand_u16(vreinterpret_u16_p16(result_high), vreinterpret_u16_u64(vdup_n_u64(k_16))));
+    result_low = vadd_p16(result_high, result_low);
+    temp_result = vreinterpretq_p8_p16(vcombine_p16(result_low, result_high));
+    temp_result = vextq_p8(temp_result, temp_result, 13);
+    result = vaddq_p16(result, vreinterpretq_p16_p8(temp_result));
+
+    poly16x8_t K = vmull_p8(a, b_4);
+    result_high = vget_high_p16(K);
+    result_low = vget_low_p16(K);
+    result_low = vadd_p16(result_high, result_low);
+    result_high = vdup_n_p16(0);
+    temp_result = vreinterpretq_p8_p16(vcombine_p16(result_low, result_high));
+    temp_result = vextq_p8(temp_result, temp_result, 12);
+    result = vaddq_p16(result, vreinterpretq_p16_p8(temp_result));
+    return vreinterpretq_p128_p16(result);
+}
+
+
+

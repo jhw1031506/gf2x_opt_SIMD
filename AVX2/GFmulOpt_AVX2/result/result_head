@@ -1,0 +1,66 @@
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define N_TEST 1000
+static inline uint64_t cpucycles(void)
+{
+    uint64_t result;
+
+    __asm__ volatile("rdtsc; shlq $32,%%rdx; orq %%rdx,%%rax"
+                   : "=a"(result) : : "%rdx");
+
+    return result;
+}
+
+uint64_t cpucycles_overhead(void)
+{
+    uint64_t t0, t1, overhead = -1LL;
+    unsigned int i;
+
+    for (i = 0; i <= 10000000; i++)
+    {
+        t0 = cpucycles();
+        __asm__ volatile("");
+        t1 = cpucycles();
+        // if(t1 - t0 < overhead)
+        overhead += t1 - t0;
+    }
+    overhead /= 10000000;
+    return overhead;
+}
+void random_wordstring(uint64_t *a, long n)
+{
+    long i;
+    for (i = 0; i < n; i++)
+    {
+        /* random () returns a value between 0 and RAND_MAX = 2^31-1 */
+        a[i] = rand() | (rand() << 31);
+        if (sizeof(long) > sizeof(int))
+        {
+            a[i] = (a[i] << 31) | rand();
+        }
+    }
+}
+
+int poly_compare_256(__m256i *A, __m256i *B, int32_t len)
+{
+  int64_t *a = (int64_t *)A;
+  int64_t *b = (int64_t *)B;
+  int flag = 0;
+  for (int i = 0; i < 4 * len; i++)
+  {
+    if (a[i] != b[i])
+    {
+      flag = 1;
+      printf("A[%d] = %016lx %016lx %016lx %016lx\n", i / 4, a[(i / 4) * 4], a[(i / 4) * 4 + 1], a[(i / 4) * 4 + 2], a[(i / 4) * 4 + 3]);
+      printf("B[%d] = %016lx %016lx %016lx %016lx\n\n", i / 4, b[(i / 4) * 4], b[(i / 4) * 4 + 1], b[(i / 4) * 4 + 2], b[(i / 4) * 4 + 3]);
+      i += (3 - (i % 4));
+    }
+  }
+  return flag;
+}
+
+//========================================================================

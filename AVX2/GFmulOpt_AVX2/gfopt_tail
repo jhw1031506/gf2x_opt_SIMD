@@ -1,0 +1,377 @@
+
+void schoolbook_mul(__m256i *Out, const __m256i *A, const __m256i *B, size_t size)
+{
+   size_t i, j;
+   __m256i r1[2];
+   __m128i *A128 = (__m128i *)A, *B128 = (__m128i *)B;
+   gfmul_1(r1, A128, B128);
+   Out[0] = r1[0];
+   Out[1] = r1[1];
+   for (j = 1; j < size; j++)
+   {
+      gfmul_1(r1, A128, B128 + 2*j);
+      //Out[j]=_mm_xor_si128(Out[j],r1[0]);
+      Out[j] ^= r1[0];
+      Out[j + 1] = r1[1];
+   }
+   for (i = 1; i < size; i++)
+   {
+      for (j = 0; j < size - 1; j++)
+      {
+        gfmul_1(r1, A128 + 2*i, B128 + 2*j);
+        Out[i + j] ^= r1[0];
+        Out[i + j + 1] ^= r1[1];
+      }
+      gfmul_1(r1, A128+2*i, B128 + 2*(size - 1));
+      Out[i + size - 1] ^= r1[0];
+      Out[i + size] = r1[1];
+   }
+}
+
+#ifdef ENV_AVX2
+#define MIN_LEN_1 0
+#define MIN_LEN_2 3
+#define MIN_LEN_3 0
+#define MIN_LEN_4 11
+#define MIN_LEN_5 6
+#define MIN_LEN_6 0
+#endif
+int main()
+{
+#ifdef ENV_AVX2 
+    __m256i A[GFLEN],B[GFLEN];
+    __m256i C[GFLEN * 2];
+    #if GFLEN >= MIN_LEN_1
+    __m256i C1[GFLEN * 2];    
+    #endif
+    #if GFLEN >= MIN_LEN_2
+    __m256i C2[GFLEN * 2];
+    #endif
+    #if GFLEN >= MIN_LEN_3 && GFLEN%5==0 
+    __m256i C3[GFLEN * 2];
+    #endif
+    #if GFLEN >= MIN_LEN_4
+    __m256i C4[GFLEN * 2];
+    #endif
+    #if GFLEN >= MIN_LEN_5
+    __m256i C5[GFLEN * 2];
+    #endif
+    #if GFLEN >= MIN_LEN_6
+    __m256i C6[GFLEN * 2];
+    #endif
+#endif
+
+    volatile uint64_t karat_2=0, karat_3=0, karat_5=0, tc3_256=0, tc3_128=0, tc3_64=0, start, tmp;
+
+    uint64_t t_measure = cpucycles_overhead();
+    FILE* fp = fopen("./gfopt_cycles", "ab");
+    char best_alg_str[10];
+    uint8_t best_alg_num;
+    uint64_t cycle_min=(-1);
+    
+    
+    for(int i=0;i<N_TEST/1000;i++){
+        random_wordstring((uint64_t *)A,(WORD_LEN>>6)*GFLEN);
+        random_wordstring((uint64_t *)B,(WORD_LEN>>6)*GFLEN);
+        start = cpucycles();
+        schoolbook_mul(C, A,B, GFLEN);
+    #if GFLEN >= MIN_LEN_1
+        karat2(C1, A, B);
+        if(poly_compare_256(C, C1,GFLEN*2)) printf("len = %d, karat2 err\n",GFLEN);
+    #endif
+    #if GFLEN >= MIN_LEN_2
+        karat3(C2, A, B);
+        if(poly_compare_256(C, C2,GFLEN*2)) printf("len = %d, karat3 err\n",GFLEN);
+    #endif
+    #if GFLEN >= MIN_LEN_3 && GFLEN%5==0 
+        karat5(C3, A, B);
+        if(poly_compare_256(C, C3,GFLEN*2)) printf("len = %d, karat5 err\n",GFLEN);
+    #endif
+    #if GFLEN >= MIN_LEN_4
+        TC3_256(C4, A, B);
+        if(poly_compare_256(C, C4,GFLEN*2)) printf("len = %d, TC3_256 err\n",GFLEN);
+    #endif
+    #if GFLEN >= MIN_LEN_5
+        TC3_128(C5, A, B);
+        if(poly_compare_256(C, C5,GFLEN*2)) printf("len = %d, TC3_128 err\n",GFLEN);
+    #endif
+    #if GFLEN >= MIN_LEN_6
+        TC3_64(C6, A, B);
+        if(poly_compare_256(C, C6,GFLEN*2)) printf("len = %d, TC3_64 err\n",GFLEN);
+    #endif
+    }
+
+    //
+#if GFLEN >= MIN_LEN_1
+    for(int i=0;i<N_TEST + 1;i++){
+        random_wordstring((uint64_t *)A,(WORD_LEN>>6)*GFLEN);
+        random_wordstring((uint64_t *)B,(WORD_LEN>>6)*GFLEN);
+        schoolbook_mul(C, A,B, GFLEN);
+
+        start = cpucycles();
+        
+        karat2(C1, A, B);
+        tmp = cpucycles() - start - t_measure;
+        if(i) karat_2 += tmp;
+        if(poly_compare_256(C, C1,GFLEN*2)) printf("len = %d, karat2 err\n",GFLEN);
+    }
+    karat_2/=N_TEST;
+#else
+    karat_2=-1;
+#endif
+#if GFLEN >= MIN_LEN_2
+    for(int i=0;i<N_TEST + 1;i++){
+        random_wordstring((uint64_t *)A,(WORD_LEN>>6)*GFLEN);
+        random_wordstring((uint64_t *)B,(WORD_LEN>>6)*GFLEN);
+        schoolbook_mul(C, A,B, GFLEN);
+
+        start = cpucycles();
+        
+        karat3(C2, A, B);
+        tmp = cpucycles() - start - t_measure;
+        if(i) karat_3 += tmp;
+        if(poly_compare_256(C, C2,GFLEN*2)) printf("len = %d, karat3 err\n",GFLEN);
+    }
+    karat_3/=N_TEST;
+#else
+    karat_3=-1;
+#endif
+
+#if GFLEN >= MIN_LEN_3 && GFLEN%5==0
+    for(int i=0;i<N_TEST + 1;i++){
+        random_wordstring((uint64_t *)A,(WORD_LEN>>6)*GFLEN);
+        random_wordstring((uint64_t *)B,(WORD_LEN>>6)*GFLEN);
+        schoolbook_mul(C, A,B, GFLEN);
+
+        start = cpucycles();
+        
+        karat5(C3, A, B);
+        tmp = cpucycles() - start - t_measure;
+        if(i) karat_5 += tmp;
+        if(poly_compare_256(C, C3,GFLEN*2)) printf("len = %d, karat5 err\n",GFLEN);
+    }
+    karat_5/=N_TEST;
+#else
+    karat_5=-1;
+#endif
+
+#if GFLEN >= MIN_LEN_4
+    for(int i=0;i<N_TEST + 1;i++){
+        random_wordstring((uint64_t *)A,(WORD_LEN>>6)*GFLEN);
+        random_wordstring((uint64_t *)B,(WORD_LEN>>6)*GFLEN);
+        schoolbook_mul(C, A,B, GFLEN);
+
+        start = cpucycles();
+        
+        #ifdef ENV_AVX2
+        TC3_256(C4, A, B);
+        tmp = cpucycles() - start - t_measure;
+        if(i) tc3_256 += tmp;
+        if(poly_compare_256(C, C4,GFLEN*2)) printf("len = %d, TC3_256 err\n",GFLEN);
+        #endif
+    }
+    tc3_256/=N_TEST;
+#else
+    tc3_256=-1;
+#endif
+
+#if GFLEN >= MIN_LEN_5
+    for(int i=0;i<N_TEST + 1;i++){
+        random_wordstring((uint64_t *)A,(WORD_LEN>>6)*GFLEN);
+        random_wordstring((uint64_t *)B,(WORD_LEN>>6)*GFLEN);
+        schoolbook_mul(C, A,B, GFLEN);
+
+        start = cpucycles();
+        
+        #ifdef ENV_AVX2
+        TC3_128(C5, A, B);
+        tmp = cpucycles() - start - t_measure;
+        if(i) tc3_128 += tmp;
+        if(poly_compare_256(C, C5,GFLEN*2)) printf("len = %d, TC3_128 err\n",GFLEN);
+        #endif
+    }
+    tc3_128/=N_TEST;
+#else
+    tc3_128=-1;
+#endif
+#if GFLEN >= MIN_LEN_6
+    for(int i=0;i<N_TEST + 1;i++){
+        random_wordstring((uint64_t *)A,(WORD_LEN>>6)*GFLEN);
+        random_wordstring((uint64_t *)B,(WORD_LEN>>6)*GFLEN);
+        schoolbook_mul(C, A,B, GFLEN);
+
+        start = cpucycles();
+        
+        #ifdef ENV_AVX2
+        TC3_64(C6, A, B);
+        tmp = cpucycles() - start - t_measure;
+        if(i) tc3_64 += tmp;
+        if(poly_compare_256(C, C6,GFLEN*2)) printf("len = %d, TC3_64 err\n",GFLEN);
+        #endif
+    }
+    tc3_64/=N_TEST;
+#else
+    tc3_64=-1;
+#endif
+
+    if(karat_2 < karat_3){
+        cycle_min=karat_2;
+        sprintf(best_alg_str,"karat2");
+        best_alg_num=1;
+    }
+    else{
+        cycle_min=karat_3;
+        sprintf(best_alg_str,"karat3");
+        best_alg_num=2;
+    }
+    if(cycle_min > karat_5){
+        cycle_min=karat_5;
+        sprintf(best_alg_str,"karat5");
+        best_alg_num=3;
+    }
+#ifdef ENV_AVX2
+    if(cycle_min > tc3_256){
+        cycle_min=tc3_256;
+        sprintf(best_alg_str,"TC3_256");
+        best_alg_num=4;
+    }
+    if(cycle_min > tc3_128){
+        cycle_min=tc3_128;
+        sprintf(best_alg_str,"TC3_128");
+        best_alg_num=5;
+    }
+    if(cycle_min > tc3_64){
+        cycle_min=tc3_64;
+        sprintf(best_alg_str,"TC3_64");
+        best_alg_num=6;
+    }
+#endif
+    best_alg_set(GFLEN, best_alg_num, ENV_NUM);
+
+    fprintf(fp, "len = %d.. best_alg = %s, clock cycle = %ld\n\n",GFLEN, best_alg_str, cycle_min);
+
+    fprintf(fp, "  karat2 : %ld\n  karat3 : %ld\n  karat5 : %ld\n",karat_2,karat_3,karat_5);
+#ifdef ENV_AVX2
+    fprintf(fp, "  TC3_256: %ld\n  TC3_128: %ld\n  TC3_64 : %ld\n\n",tc3_256,tc3_128,tc3_64);
+#endif
+
+    fclose(fp);
+    printf("len = %d : best_alg = %s, clock cycle = %ld\n",GFLEN, best_alg_str, cycle_min);
+
+#if GFLEN < MAX_LEN
+
+    char func_name[20];
+    FILE* fpw1 = fopen("./gfopt_head", "ab");
+    sprintf(func_name, "%s_mult_%d", best_alg_str, GFLEN);
+    fprintf(fpw1,"#define gfmul_%d(O,A,B) %s((__m256i   *)O,(__m256i   *)A,(__m256i   *)B)\n\n",GFLEN,func_name);
+
+//Generate code for the best algorithm
+    if(best_alg_num==1){//karat2
+        fprint_karat2(fpw1, func_name, GFLEN);
+    }
+    else if(best_alg_num==2){//karat3
+        fprint_karat3(fpw1, func_name, GFLEN);
+    }
+    else if(best_alg_num==3){//karat5
+        fprint_karat5(fpw1, func_name, GFLEN);
+    }
+
+#ifdef ENV_AVX2    
+    else if(best_alg_num==4){//tc3_256
+        fprint_TC3_256(fpw1, func_name, GFLEN);
+    }
+    else if(best_alg_num==5){//tc3_128
+        fprint_TC3_128(fpw1, func_name, GFLEN);
+    }    
+    else if(best_alg_num==6){//tc3_64
+        fprint_TC3_64(fpw1, func_name, GFLEN);
+    }    
+#endif
+    fclose(fpw1);
+
+//Generate possible algorithm code for the next dimension
+    char str_middle[100];
+    sprintf(str_middle,"./gfopt_middle");
+    FILE* fpw2 = fopen(str_middle,"wb");
+
+#if (GFLEN+1) >= MIN_LEN_1 //karat2
+    fprint_karat2(fpw2, "karat2", (GFLEN+1));
+#endif
+#if (GFLEN+1) >= MIN_LEN_2 //karat3
+    fprint_karat3(fpw2, "karat3", (GFLEN+1));
+#endif
+#if (GFLEN+1) >= MIN_LEN_3 && ((GFLEN+1)%5==0) //karat5 
+    fprint_karat5(fpw2, "karat5", (GFLEN+1));
+#endif
+
+
+#ifdef ENV_AVX2 
+#if (GFLEN+1) >= MIN_LEN_4
+    fprint_TC3_256(fpw2, "TC3_256", (GFLEN+1));
+#endif
+#if (GFLEN+1) >= MIN_LEN_5
+    fprint_TC3_128(fpw2, "TC3_128", (GFLEN+1));
+#endif
+#if (GFLEN+1) >= MIN_LEN_6
+    fprint_TC3_64(fpw2, "TC3_64", (GFLEN+1));    
+#endif
+#endif
+    fclose(fpw2);
+
+//Create gfopt_len_N.c by Combine gfopt_head, gfopt_head, gfopt_tail
+    char str[100];
+    sprintf(str,"./src/gfopt_len_%d.c",GFLEN+1);
+
+    FILE* fpr_1 = fopen("./gfopt_head", "rb");
+    FILE* fpr_2 = fopen("./gfopt_middle", "rb");
+    FILE* fpr_3 = fopen("./gfopt_tail", "rb");
+	FILE* fpw = fopen(str, "ab");
+    char file;
+    fprintf(fpw,"#define GFLEN %d\n",GFLEN+1);
+
+	while (!feof(fpr_1))
+	{
+		if(fread(&file, 1, 1, fpr_1)!=1) break;
+		fwrite(&file, 1, 1, fpw);
+	}
+    fclose(fpr_1);
+	while (!feof(fpr_2))
+	{
+		if(fread(&file, 1, 1, fpr_2)!=1) break;
+		fwrite(&file, 1, 1, fpw);
+	}
+    fclose(fpr_2);
+	while (!feof(fpr_3))
+	{
+		if(fread(&file, 1, 1, fpr_3)!=1) break;
+		fwrite(&file, 1, 1, fpw);
+	}
+    fclose(fpr_3);
+	fclose(fpw);
+
+//Compile and run the file gfopt_len_(N+1).c
+    char strsys1[200];
+    char strsys2[200];
+#ifdef ENV_AVX2
+    char str_options[200]=" -DENV_AVX2 -mpclmul -msse2 -mavx2 ";
+    #ifdef ENV_VPCLMUL
+    strcat(str_options, " -DENV_VPCLMUL -mvpclmulqdq ");
+    #endif
+#elif define(ENV_NEON)
+    char str_options[200]="";
+#endif
+    sprintf(strsys1,"gcc ./src/gfopt_len_%d.c ./tools.c -o ./src/gfopt_len_%d -O3 -std=c99 -funroll-all-loops  -pedantic -Wall -Wextra",GFLEN+1,GFLEN+1);
+    strcat(strsys1,str_options);
+    sprintf(strsys2,"./src/gfopt_len_%d",GFLEN+1);
+    if(system(strsys1)) printf("./src/gfopt_len_%d.c compile err\n",GFLEN+1);    
+    // clock_t sleep_t=clock();
+    // while(1){
+    //     if((clock()-sleep_t)/CLOCKS_PER_SEC >= 1) break;
+    // }
+    if(system(strsys2)) printf("./src/gfopt_len_%d err\n",GFLEN+1);
+#else
+    printf("end\n");
+#endif
+    return 0;
+    
+} 

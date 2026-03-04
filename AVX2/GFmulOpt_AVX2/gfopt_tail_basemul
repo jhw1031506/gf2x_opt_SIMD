@@ -1,0 +1,530 @@
+#define TESTS_PER_ITER 10000
+#define STRING_MAXLEN 100
+#define N_TEST_BASEMUL 1000000
+
+#ifdef ENV_AVX2
+#define MIN_LEN_1 0
+#define MIN_LEN_2 3
+#define MIN_LEN_3 0
+#define MIN_LEN_4 11
+#define MIN_LEN_5 6
+#define MIN_LEN_6 0
+#endif
+//
+
+#ifdef ENV_AVX2
+void schoolbook_basemul(__m256i *Out, __m256i *A, __m256i *B)
+{   
+    uint64_t *p_out;
+    uint64_t *p_a, *p_b;
+    Out[0]=_mm256_setzero_si256();
+    Out[1]=_mm256_setzero_si256();
+    p_out = ((uint64_t *)Out);
+    p_a = (uint64_t *) A;
+    p_b = (uint64_t *) B;
+    for(int i=255;i>=0;i--){
+        if (((p_a[i/64] >> (i%64)) & 0x1) == 1){
+            int i_tmp1=(i%64);
+            int i_tmp2=64 - (i%64);
+            if(i_tmp1 == 0){
+                p_out[i/64  ] ^= p_b[0];
+                p_out[i/64+1] ^= p_b[1];
+                p_out[i/64+2] ^= p_b[2];
+                p_out[i/64+3] ^= p_b[3];
+            }
+            else{
+                p_out[i/64  ] ^= (p_b[0] << i_tmp1);
+                p_out[i/64+1] ^= (p_b[1] << i_tmp1) | (p_b[0] >> i_tmp2);
+                p_out[i/64+2] ^= (p_b[2] << i_tmp1) | (p_b[1] >> i_tmp2);
+                p_out[i/64+3] ^= (p_b[3] << i_tmp1) | (p_b[2] >> i_tmp2);
+                p_out[i/64+4] ^= (p_b[3] >> i_tmp2);
+            }
+        }
+    }
+}
+#ifdef ENV_VPCLMUL
+
+static inline void karat_mult_1_PCLMULQDQ(__m256i *C, __m256i *A, __m256i *B) {
+
+    __m128i *A128 = (__m128i *)A, *B128 = (__m128i *)B, *C128 = (__m128i *)C;
+	__m128i D1[2];
+	__m128i D0[2], D2[2];
+	__m128i Al = _mm_loadu_si128(A128);
+	__m128i Ah = _mm_loadu_si128(A128 + 1);
+	__m128i Bl = _mm_loadu_si128(B128);
+	__m128i Bh = _mm_loadu_si128(B128 + 1);
+
+	//	Compute Al.Bl=D0
+	__m128i DD0 = _mm_clmulepi64_si128(Al, Bl, 0);
+	__m128i DD2 = _mm_clmulepi64_si128(Al, Bl, 0x11);
+	__m128i AAlpAAh = _mm_xor_si128(Al, _mm_shuffle_epi32(Al, 0x4e));
+	__m128i BBlpBBh = _mm_xor_si128(Bl, _mm_shuffle_epi32(Bl, 0x4e));
+	__m128i DD1 = _mm_xor_si128(_mm_xor_si128(DD0, DD2), _mm_clmulepi64_si128(AAlpAAh, BBlpBBh, 0));
+	D0[0] = _mm_xor_si128(DD0, _mm_unpacklo_epi64(_mm_setzero_si128(), DD1));
+	D0[1] = _mm_xor_si128(DD2, _mm_unpackhi_epi64(DD1, _mm_setzero_si128()));
+
+	//	Compute Ah.Bh=D2
+	DD0 = _mm_clmulepi64_si128(Ah, Bh, 0);
+	DD2 = _mm_clmulepi64_si128(Ah, Bh, 0x11);
+	AAlpAAh = _mm_xor_si128(Ah, _mm_shuffle_epi32(Ah, 0x4e));
+	BBlpBBh = _mm_xor_si128(Bh, _mm_shuffle_epi32(Bh, 0x4e));
+	DD1 = _mm_xor_si128(_mm_xor_si128(DD0, DD2), _mm_clmulepi64_si128(AAlpAAh, BBlpBBh, 0));
+	D2[0] = _mm_xor_si128(DD0, _mm_unpacklo_epi64(_mm_setzero_si128(), DD1));
+	D2[1] = _mm_xor_si128(DD2, _mm_unpackhi_epi64(DD1, _mm_setzero_si128()));
+
+	// Compute AlpAh.BlpBh=D1
+	// Initialisation of AlpAh and BlpBh
+	__m128i AlpAh = _mm_xor_si128(Al,Ah);
+	__m128i BlpBh = _mm_xor_si128(Bl,Bh);
+	DD0 = _mm_clmulepi64_si128(AlpAh, BlpBh, 0);
+	DD2 = _mm_clmulepi64_si128(AlpAh, BlpBh, 0x11);
+	AAlpAAh = _mm_xor_si128(AlpAh, _mm_shuffle_epi32(AlpAh, 0x4e));
+	BBlpBBh = _mm_xor_si128(BlpBh, _mm_shuffle_epi32(BlpBh, 0x4e));
+	DD1 = _mm_xor_si128(_mm_xor_si128(DD0, DD2), _mm_clmulepi64_si128(AAlpAAh, BBlpBBh, 0));
+	D1[0] = _mm_xor_si128(DD0, _mm_unpacklo_epi64(_mm_setzero_si128(), DD1));
+	D1[1] = _mm_xor_si128(DD2, _mm_unpackhi_epi64(DD1, _mm_setzero_si128()));
+
+	
+	__m128i middle = _mm_xor_si128(D0[1], D2[0]);
+	C128[0] = D0[0];
+	C128[1] = middle ^ D0[0] ^ D1[0];
+	C128[2] = middle ^ D1[1] ^ D2[1];
+	C128[3] = D2[1];
+}
+
+static inline void karat_karat_1_VPCLMULQDQ(__m256i *C, __m256i *A, __m256i *B)
+{
+    
+    __m256i T0, T1, T2, T3, T4;
+    __m256i tmp_a, tmp_b, middle, S1, S2, S3;
+    __m256i mask={0,0xFFFFFFFFFFFFFFFF,0xFFFFFFFFFFFFFFFF,0};
+
+    T0 = _mm256_clmulepi64_epi128(*A, *B, 0);
+    T1 = _mm256_clmulepi64_epi128(*A, *B, 0x11);
+
+    tmp_a = _mm256_permute4x64_epi64(*A, 0xe1) ^ _mm256_permute4x64_epi64(*A, 0x78);
+    tmp_b = _mm256_permute4x64_epi64(*B, 0xe1) ^ _mm256_permute4x64_epi64(*B, 0x78);
+    T2 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0);
+    T3 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x11);
+
+    tmp_a = tmp_a ^ _mm256_permute4x64_epi64(tmp_a, 0x4e);
+    tmp_b = tmp_b ^ _mm256_permute4x64_epi64(tmp_b, 0x4e);
+    T4 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0);
+
+    // Compute Al.Bl=S1
+    middle = T0 ^ T1 ^ T2;
+    middle = _mm256_permute4x64_epi64(middle, 0xD2);
+    S1 = _mm256_and_si256(middle,mask) ^ _mm256_permute2x128_si256(T0, T1, 0x20);
+
+    // Compute Ah.Bh=S2
+    middle = _mm256_shuffle_epi32(middle, 0x4e);
+    S2 = _mm256_and_si256(middle,mask) ^ _mm256_permute2x128_si256(T0, T1, 0x31);
+
+    // Compute AlpAh.BlpBh=S3
+    S3 = T3 ^ _mm256_and_si256(_mm256_shuffle_epi32(T4, 0x4e),mask);
+    middle = _mm256_permute4x64_epi64(T3, 0xD2);
+    middle = middle ^ _mm256_shuffle_epi32(middle, 0x4e);
+    
+    //
+    S3 ^= _mm256_and_si256(middle,mask) ^ S1 ^ S2;
+
+    middle = _mm256_setzero_si256();
+    S3=_mm256_permute4x64_epi64(S3, 0x4e);
+    C[0] = _mm256_xor_si256(S1, _mm256_blend_epi32(S3,middle,0x0F));
+    C[1] = _mm256_xor_si256(S2, _mm256_blend_epi32(S3,middle,0xF0));
+
+}
+
+static inline void karat_SB_1_VPCLMULQDQ(__m256i *C, __m256i *A, __m256i *B)
+{
+    
+    __m256i T0, T1, T2;
+    __m256i tmp_a, tmp_b, middle, S1, S2, S3;
+    __m256i mask={0,0xFFFFFFFFFFFFFFFF,0xFFFFFFFFFFFFFFFF,0};
+    __m256i mask_rev={0xFFFFFFFFFFFFFFFF,0,0,0xFFFFFFFFFFFFFFFF};
+
+    T0 = _mm256_clmulepi64_epi128(*A, *B, 0);    
+    T1 = _mm256_clmulepi64_epi128(*A, *B, 0x11); 
+
+    tmp_a = *A ^ _mm256_shuffle_epi32(*A, 0x4e); 
+    tmp_b = *B ^ _mm256_shuffle_epi32(*B, 0x4e); 
+    T2 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0);
+    T2 = T0 ^ T1 ^ T2;
+
+    //S1 = Al*Bl
+    T2=_mm256_permute4x64_epi64(T2, 0xD2);
+    middle = _mm256_and_si256(T2, mask);    
+    S1 = _mm256_permute2x128_si256(T0, T1, 0x20) ^ middle;
+
+    //S2 = Ah*Bh
+    T2=_mm256_shuffle_epi32(T2, 0x4e);
+    middle = _mm256_and_si256(T2, mask);
+    S2 = _mm256_permute2x128_si256(T0, T1, 0x31) ^ middle;
+
+    //S3 = AlpAh*BlpBh
+    tmp_a=_mm256_permute4x64_epi64(*A, 0x4e); 
+    T0 = _mm256_clmulepi64_epi128(tmp_a, *B, 0);    
+    T1 = _mm256_clmulepi64_epi128(tmp_a, *B, 0x11); 
+    tmp_a = tmp_a ^ _mm256_shuffle_epi32(tmp_a, 0x4e); 
+    T2 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0);
+    T2 = T0 ^ T1 ^ T2;
+    T2=_mm256_permute4x64_epi64(T2, 0x2D); 
+    middle = _mm256_and_si256(T2, mask_rev);    
+    S3 = _mm256_permute2x128_si256(T1, T0, 0x20) ^ middle;
+
+    //
+    T2=_mm256_shuffle_epi32(T2, 0x4e);
+    middle = _mm256_and_si256(T2, mask_rev);
+    S3 ^= _mm256_permute2x128_si256(T1, T0, 0x31) ^ middle;
+    
+    middle = _mm256_setzero_si256();
+
+    C[0] = _mm256_xor_si256(S1, _mm256_blend_epi32(S3,middle,0x0F));
+    C[1] = _mm256_xor_si256(S2, _mm256_blend_epi32(S3,middle,0xF0));
+
+
+}
+static inline void SB_karat_1_VPCLMULQDQ(__m256i *C, __m256i *A, __m256i *B)
+{
+    
+    __m256i T0, T1, T2;
+    __m256i tmp_a, tmp_b, S0, S1, S2;
+    __m256i zero = _mm256_setzero_si256();
+
+    //S0 = Al*Bl, S1 = Ah*Bh
+    tmp_a = *A;
+    tmp_b = *B;
+    T0 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0);
+    T1 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x01) 
+        ^ _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x10);
+    T2 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x11);
+
+    T0 = T0 ^ _mm256_slli_si256(T1,8);
+    T2 = T2 ^ _mm256_srli_si256(T1,8);
+
+    S0 = _mm256_permute2x128_si256(T0, T2, 0x20);
+    S1 = _mm256_permute2x128_si256(T0, T2, 0x31);
+    
+    //S2 = (Ah + Al) * (Bh + Bl)
+    tmp_a ^= _mm256_permute4x64_epi64(tmp_a, 0x4e);
+    tmp_a = _mm256_permute4x64_epi64(tmp_a, 0xB4);
+
+    tmp_b ^= _mm256_permute4x64_epi64(tmp_b, 0x4e);
+    tmp_b = _mm256_permute4x64_epi64(tmp_b, 0xB4);
+
+    S2 = _mm256_clmulepi64_epi128(tmp_a, tmp_b,0x00);
+    T0 = _mm256_clmulepi64_epi128(tmp_a, tmp_b,0x10);
+
+    S2 ^= _mm256_permute4x64_epi64(T0, 0x99) ^ _mm256_shuffle_epi32(T0, 0x4e); 
+
+    //
+    S2 = _mm256_permute4x64_epi64(S0^S1^S2, 0x4e);
+    
+    C[0] = S0 ^ _mm256_blend_epi32(S2,zero,0x0F);
+    C[1] = S1 ^ _mm256_blend_epi32(S2,zero,0xF0);
+
+
+}
+
+static inline void SB_SB_1_VPCLMULQDQ(__m256i *C, __m256i *A, __m256i *B)
+{
+
+    
+    __m256i T0, T1, T2, S0, S1, S2;
+    __m256i tmp_a, tmp_b;
+    __m256i zero = _mm256_setzero_si256();
+
+    //C[0] = Al*Bl, C[1] = Ah*Bh
+
+    tmp_a = *A;
+    tmp_b = *B;
+    T0 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x00);
+    T1 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x01) 
+        ^ _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x10);
+    T2 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x11);
+
+    T0 = T0 ^ _mm256_slli_si256(T1,8);
+    T2 = T2 ^ _mm256_srli_si256(T1,8);
+
+    S0 = _mm256_permute2x128_si256(T0, T2, 0x20);
+    S1 = _mm256_permute2x128_si256(T0, T2, 0x31);
+    
+    //S2 = Ah*Bl + Al*Bh (128-bit shuffle)
+    tmp_a = _mm256_permute4x64_epi64(tmp_a, 0x4e);
+    T0 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x00);
+    T1 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x01) 
+        ^ _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x10);
+    T2 = _mm256_clmulepi64_epi128(tmp_a, tmp_b, 0x11);
+
+    T0 = T0 ^ _mm256_slli_si256(T1,8);
+    T2 = T2 ^ _mm256_srli_si256(T1,8);
+
+    S2 = _mm256_permute2x128_si256(T2, T0, 0x20) ^ _mm256_permute2x128_si256(T2, T0, 0x31);
+
+    //
+    C[0] = S0 ^ _mm256_blend_epi32(S2,zero,0x0F);
+    C[1] = S1 ^ _mm256_blend_epi32(S2,zero,0xF0);
+
+
+}
+#else
+static inline void karat_mult_1_PCLMULQDQ(__m128i *C, __m128i *A, __m128i *B) {
+	__m128i D1[2];
+	__m128i D0[2], D2[2];
+	__m128i Al = _mm_loadu_si128(A);
+	__m128i Ah = _mm_loadu_si128(A + 1);
+	__m128i Bl = _mm_loadu_si128(B);
+	__m128i Bh = _mm_loadu_si128(B + 1);
+
+	//	Compute Al.Bl=D0
+	__m128i DD0 = _mm_clmulepi64_si128(Al, Bl, 0);//a0*b0
+	__m128i DD2 = _mm_clmulepi64_si128(Al, Bl, 0x11);//a1*b1 1
+	__m128i AAlpAAh = _mm_xor_si128(Al, _mm_shuffle_epi32(Al, 0x4e));//shuffle 0x4e : a1a0->a0a1 (a3,a4:64bit)
+	__m128i BBlpBBh = _mm_xor_si128(Bl, _mm_shuffle_epi32(Bl, 0x4e)); //3
+	__m128i DD1 = _mm_xor_si128(_mm_xor_si128(DD0, DD2), _mm_clmulepi64_si128(AAlpAAh, BBlpBBh, 0));//a1b0^a0b1=(a0^a1)(b0^b1)^a0b0^a1b1
+	D0[0] = _mm_xor_si128(DD0, _mm_unpacklo_epi64(_mm_setzero_si128(), DD1));//DD1을
+	D0[1] = _mm_xor_si128(DD2, _mm_unpackhi_epi64(DD1, _mm_setzero_si128()));//DD0, DD2의 중간에 xor하는 느낌
+
+	//	Compute Ah.Bh=D2
+	DD0 = _mm_clmulepi64_si128(Ah, Bh, 0);//a2*b2
+	DD2 = _mm_clmulepi64_si128(Ah, Bh, 0x11);//a3*b3 
+	AAlpAAh = _mm_xor_si128(Ah, _mm_shuffle_epi32(Ah, 0x4e));//shuffle 0x4e : a3a2->a2a3 (a2,a3:64bit)
+	BBlpBBh = _mm_xor_si128(Bh, _mm_shuffle_epi32(Bh, 0x4e));//xor_si128 : xor
+	DD1 = _mm_xor_si128(_mm_xor_si128(DD0, DD2), _mm_clmulepi64_si128(AAlpAAh, BBlpBBh, 0));
+	D2[0] = _mm_xor_si128(DD0, _mm_unpacklo_epi64(_mm_setzero_si128(), DD1));
+	D2[1] = _mm_xor_si128(DD2, _mm_unpackhi_epi64(DD1, _mm_setzero_si128()));
+
+	// Compute AlpAh.BlpBh=D1
+	// Initialisation of AlpAh and BlpBh
+	__m128i AlpAh = _mm_xor_si128(Al,Ah);
+	__m128i BlpBh = _mm_xor_si128(Bl,Bh);
+	DD0 = _mm_clmulepi64_si128(AlpAh, BlpBh, 0);
+	DD2 = _mm_clmulepi64_si128(AlpAh, BlpBh, 0x11);
+	AAlpAAh = _mm_xor_si128(AlpAh, _mm_shuffle_epi32(AlpAh, 0x4e));
+	BBlpBBh = _mm_xor_si128(BlpBh, _mm_shuffle_epi32(BlpBh, 0x4e));
+	DD1 = _mm_xor_si128(_mm_xor_si128(DD0, DD2), _mm_clmulepi64_si128(AAlpAAh, BBlpBBh, 0));
+	D1[0] = _mm_xor_si128(DD0, _mm_unpacklo_epi64(_mm_setzero_si128(), DD1));
+	D1[1] = _mm_xor_si128(DD2, _mm_unpackhi_epi64(DD1, _mm_setzero_si128()));
+
+	
+	__m128i middle = _mm_xor_si128(D0[1], D2[0]);
+	C[0] = D0[0];
+	C[1] = middle ^ D0[0] ^ D1[0];
+	C[2] = middle ^ D1[1] ^ D2[1];
+	C[3] = D2[1];
+}
+#endif
+#endif
+
+int main(){
+#ifdef ENV_AVX2
+#ifdef ENV_VPCLMUL
+    #define ALG_CNT 5
+    char alg_str[ALG_CNT][STRING_MAXLEN];
+    strcpy(alg_str[0],"karat_mult_1_PCLMULQDQ");
+    strcpy(alg_str[1],"karat_karat_1_VPCLMULQDQ");
+    strcpy(alg_str[2],"karat_SB_1_VPCLMULQDQ");
+    strcpy(alg_str[3],"SB_karat_1_VPCLMULQDQ");
+    strcpy(alg_str[4],"SB_SB_1_VPCLMULQDQ");
+    void (*func_p[ALG_CNT])(__m256i *, __m256i *, __m256i *);
+    func_p[0] = karat_mult_1_PCLMULQDQ;
+    func_p[1] = karat_karat_1_VPCLMULQDQ;
+    func_p[2] = karat_SB_1_VPCLMULQDQ;
+    func_p[3] = SB_karat_1_VPCLMULQDQ;
+    func_p[4] = SB_SB_1_VPCLMULQDQ;
+    
+#else
+    #define ALG_CNT 1
+    char alg_str[ALG_CNT][STRING_MAXLEN];
+    strcpy(alg_str[0],"karat_mult_1_PCLMULQDQ");
+    void (*func_p[ALG_CNT])(__m128i *, __m128i *, __m128i *);
+    func_p[0] = karat_mult_1_PCLMULQDQ;
+#endif
+#endif
+    __m256i A[TESTS_PER_ITER],B[TESTS_PER_ITER];
+    __m256i C_sch[TESTS_PER_ITER * 2];
+    __m256i C[ALG_CNT][TESTS_PER_ITER * 2]; //크게 잡아서 일차원으로 바꾸기
+
+    volatile uint64_t start, fin, t_basemul[ALG_CNT], t_tmp;
+    uint64_t fail_cnt[5] = {0,}, fail_total = 0;
+    uint64_t t_measure = cpucycles_overhead();
+
+    uint8_t best_basemul;
+    char best_alg_str[STRING_MAXLEN];
+    for(size_t iter=0; iter<N_TEST_BASEMUL/(TESTS_PER_ITER*100); iter++){        
+        random_wordstring((uint64_t *)A,TESTS_PER_ITER * (WORD_LEN>>6));
+        random_wordstring((uint64_t *)B,TESTS_PER_ITER * (WORD_LEN>>6));
+        
+        for(size_t j=0;j<TESTS_PER_ITER;j++){
+            schoolbook_basemul(&C_sch[2*j], &A[j], &B[j]);
+        }
+
+        for(size_t i=0;i<ALG_CNT;i++){
+            start=cpucycles();
+            for(size_t j=0;j<TESTS_PER_ITER;j++){
+                #ifdef ENV_VPCLMUL
+                func_p[i](&C[i][2*j], &A[j], &B[j]);
+                #else
+                func_p[i]((__m128i *)&C[i][2*j], (__m128i *)&A[j], (__m128i *)&B[j]);
+                #endif
+            }
+            fin = cpucycles();
+            if(poly_compare_256(C_sch, C[i], TESTS_PER_ITER * 2)) fail_cnt[i]++;
+        }
+    }
+    for(int iter=0; iter<N_TEST_BASEMUL/TESTS_PER_ITER; iter++){        
+        random_wordstring((uint64_t *)A,TESTS_PER_ITER * (WORD_LEN>>6));
+        random_wordstring((uint64_t *)B,TESTS_PER_ITER * (WORD_LEN>>6));
+        
+        for(size_t j=0;j<TESTS_PER_ITER;j++){
+            schoolbook_basemul(&C_sch[2*j], &A[j], &B[j]);
+        }
+
+        for(size_t i=0;i<ALG_CNT;i++){
+            start=cpucycles();
+            for(size_t j=0;j<TESTS_PER_ITER;j++){
+                #ifdef ENV_VPCLMUL
+                func_p[i](&C[i][2*j], &A[j], &B[j]);
+                #else
+                func_p[i]((__m128i *)&C[i][2*j], (__m128i *)&A[j], (__m128i *)&B[j]);
+                #endif
+            }
+            fin = cpucycles();
+            t_basemul[i] += fin - start - t_measure;
+            if(poly_compare_256(C_sch, C[i], TESTS_PER_ITER * 2)) fail_cnt[i]++;
+        }
+    }
+
+    printf("\n============basemul============\n\n");
+    for(size_t i=0;i<ALG_CNT;i++){
+        printf("%s..\n\t%.2f\n", alg_str[i], (double)t_basemul[i]/(N_TEST_BASEMUL));
+        fail_total += fail_cnt[i];
+    }
+    printf("\nfail_total = %ld\n",fail_total);
+    if(fail_total){
+        for(size_t i=0;i<ALG_CNT;i++){
+            if(fail_cnt[i]) printf("basemul: %s fail, fail_cnt = %ld\n", alg_str[i], fail_cnt[i]);
+        }
+        return -1;
+    }
+    t_tmp=t_basemul[0];
+    best_basemul=0;
+    strcpy(best_alg_str, alg_str[best_basemul]);
+    for(size_t i=1;i<ALG_CNT;i++){
+        if(t_basemul[i] < t_tmp) {
+            t_tmp = t_basemul[i];
+            best_basemul = i;
+            strcpy(best_alg_str, alg_str[best_basemul]);
+        }
+    }
+    best_alg_set(1, best_basemul, ENV_NUM);
+    printf("best basemul: %s\n", best_alg_str);
+    
+    printf("\n============polymul============\n\n");
+
+    FILE* fpw1 = fopen("./gfopt_head", "ab");
+
+
+//Generate code for the best algorithm
+#ifdef ENV_AVX2
+#ifdef ENV_VPCLMUL
+    fprintf(fpw1,"#define gfmul_1(O,A,B) %s((__m256i *)(O), (__m256i *)(A), (__m256i *)(B))\n\n",best_alg_str);
+    switch(best_basemul){
+    case 0:
+        fprint_karat_mult_1_PCLMULQDQ(fpw1,best_alg_str);
+        break;
+    case 1:
+        fprint_karat_karat_1_VPCLMULQDQ(fpw1,best_alg_str);
+        break;
+    case 2:
+        fprint_karat_SB_1_VPCLMULQDQ(fpw1,best_alg_str);
+        break;
+    case 3:
+        fprint_SB_karat_1_VPCLMULQDQ(fpw1,best_alg_str);
+        break;
+    case 4:
+        fprint_SB_SB_1_VPCLMULQDQ(fpw1,best_alg_str);
+        break;
+    default:
+        printf("err.. best_basemul = %d",best_basemul);
+        return -1;
+        break;
+    }
+#else
+    fprintf(fpw1,"#define gfmul_1(O,A,B) %s((__m128i *)(O), (__m128i *)(A), (__m128i *)(B))\n\n",best_alg_str);
+    switch(best_basemul){
+    case 0:
+        fprint_karat_mult_1_PCLMULQDQ(fpw1,best_alg_str);
+        break;
+    default:
+        printf("err.. best_basemul = %d",best_basemul);
+        return -1;
+        break;
+    }
+#endif
+#endif
+    fclose(fpw1);
+//Generate possible algorithm code for the next dimension
+    FILE* fpw2 = fopen("./gfopt_middle","wb");
+    fprint_karat2(fpw2, "karat2", 2);
+#ifdef ENV_AVX2 
+    fprint_TC3_64(fpw2, "TC3_64", 2);    
+#endif
+    fclose(fpw2);
+
+//Create gfopt_len_N.c by Combine gfopt_head, gfopt_head, gfopt_tail
+    char str[STRING_MAXLEN];
+    sprintf(str,"./src/gfopt_len_2.c");
+
+    FILE* fpr_1 = fopen("./gfopt_head", "rb");
+    FILE* fpr_2 = fopen("./gfopt_middle", "rb");
+    FILE* fpr_3 = fopen("./gfopt_tail", "rb");
+	FILE* fpw = fopen(str, "ab");
+    char file;
+    fprintf(fpw,"#define GFLEN 2\n");
+
+	while (!feof(fpr_1))
+	{
+		if(fread(&file, 1, 1, fpr_1)!=1) break;
+		fwrite(&file, 1, 1, fpw);
+	}
+    fclose(fpr_1);
+	while (!feof(fpr_2))
+	{
+		if(fread(&file, 1, 1, fpr_2)!=1) break;
+		fwrite(&file, 1, 1, fpw);
+	}
+    fclose(fpr_2);
+	while (!feof(fpr_3))
+	{
+		if(fread(&file, 1, 1, fpr_3)!=1) break;
+		fwrite(&file, 1, 1, fpw);
+	}
+    fclose(fpr_3);
+	fclose(fpw);
+
+//Compile and run the file gfopt_len_(N+1).c
+    char strsys1[1000];
+    char strsys2[1000];
+#ifdef ENV_AVX2
+    char str_options[1000]=" -DENV_AVX2 -mpclmul -msse2 -mavx2 ";
+    #ifdef ENV_VPCLMUL
+    strcat(str_options, " -DENV_VPCLMUL -mvpclmulqdq ");
+    #endif
+#endif
+#ifdef ENV_NEON
+    char str_options[1000]="";
+#endif
+    sprintf(strsys1,"gcc ./src/gfopt_len_%d.c ./tools.c -o ./src/gfopt_len_%d -O3 -std=c99 -funroll-all-loops  -pedantic -Wall -Wextra",GFLEN+1,GFLEN+1);
+    strcat(strsys1,str_options);
+    sprintf(strsys2,"./src/gfopt_len_%d",GFLEN+1);
+    if(system(strsys1)) printf("./src/gfopt_len_%d.c compile err\n",GFLEN+1);    
+    clock_t sleep_t=clock();
+    while(1){
+        if((clock()-sleep_t)/CLOCKS_PER_SEC >= 1) break;
+    }
+    if(system(strsys2)) printf("./src/gfopt_len_%d err\n",GFLEN+1);
+
+    return 0;
+    
+} 

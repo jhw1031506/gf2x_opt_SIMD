@@ -1,0 +1,109 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include "../gfopt.h"
+#ifdef ENV_AVX2
+#include <immintrin.h>
+#endif
+#ifdef ENV_NEON
+#include <arm_neon.h>
+#endif
+#ifdef ENV_AVX2
+    #ifdef ENV_VPCLMUL
+#include "../best_alg/best_alg_result_AVX2_VPCLMUL.h"
+    #else
+#include "../best_alg/best_alg_result_AVX2_PCLMUL.h"
+    #endif
+#else
+    #ifdef ENV_NEON
+#include "../best_alg/best_alg_result_NEON.h"
+    #else
+#include "../best_alg/best_alg_result_new.h"
+    #endif
+#endif
+
+
+void random_wordstring(uint64_t *a, long n)
+{
+    long i;
+    for (i = 0; i < n; i++)
+      {
+        /* random () returns a value between 0 and RAND_MAX = 2^31-1 */
+	      a[i] = rand() | ((uint64_t)rand() << 31) | ((uint64_t)rand() << 62);
+      
+        if (sizeof (long) > sizeof (int)){
+            a[i] = (a[i] << 31) | rand();
+        }
+      }
+}
+#ifdef ENV_AVX2
+static inline uint64_t cpucycles(void) {
+  uint64_t result;
+
+  __asm__ volatile ("rdtsc; shlq $32,%%rdx; orq %%rdx,%%rax"
+    : "=a" (result) : : "%rdx");
+
+  return result;
+}
+
+uint64_t cpucycles_overhead(void) {
+  uint64_t t0, t1, overhead = -1LL;
+  unsigned int i;
+
+  for(i=0;i<=10000000;i++) {
+    t0 = cpucycles();
+    __asm__ volatile("");
+    t1 = cpucycles();
+    // if(t1 - t0 < overhead)
+    overhead += t1 - t0;
+  }
+    overhead/=10000000;
+    //printf("%d\n",overhead);
+  return overhead;
+}
+int poly_compare_256(__m256i *A,__m256i *B,int32_t len){
+	int64_t *a=(int64_t *)A;
+	int64_t *b=(int64_t *)B;
+	for(int i=0;i<4*len;i++){
+		if(a[i]!=b[i]) return -1;
+	}
+	return 0;
+}
+
+
+static inline void divide_by_x_plus_one_64(__m256i *out, __m256i *in, int32_t size){
+	uint64_t *A = (uint64_t*) in;
+	uint64_t *B = (uint64_t*) out;
+	
+	B[0] = A[0];
+	for(int32_t i=1; i < size; i++) {
+		B[i]= B[i - 1] ^ A[i];
+	}
+  __asm__ volatile("" : : "r"(out): "memory");
+}
+
+
+
+static inline void divide_by_x_plus_one_128( __m256i *out, __m256i *in,int32_t size){ 
+     __m128i *A = (__m128i *) in;
+	 __m128i *B = (__m128i *) out;
+
+    B[0] = A[0];
+	for(int32_t i = 1; i < size; i++) {
+		B[i] = _mm_xor_si128(B[i - 1], A[i]);
+	}
+
+}
+
+static inline void divide_by_x_plus_one_256(__m256i *in, __m256i *out, int32_t size) {
+    out[0] = in[0];	
+    for(int32_t i = 1 ; i < size ; i++) {
+        out[i] = _mm256_xor_si256(out[i - 1], in[i]);
+    }
+}
+
+#endif
+
+

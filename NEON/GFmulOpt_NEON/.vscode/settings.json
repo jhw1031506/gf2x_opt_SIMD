@@ -1,0 +1,15 @@
+{
+    "files.associations": {
+        "result_*": "c",
+        "gf2x_*": "cpp",
+        "gf2x_tail_basemul": "cpp",
+        "best_alg_result_avx2_vpclmul.h": "c",
+        "immintrin.h": "c",
+        "string.h": "c",
+        "gf2x_tail": "cpp",
+        "result_init": "cpp",
+        "result_tail": "cpp",
+        "result_head": "cpp",
+        "stdlib.h": "c"
+    }
+}

@@ -1,0 +1,58 @@
+//=============================================================
+
+void schoolbook_mul(__m256i *Out, __m256i *A, __m256i *B, size_t size)
+{
+   size_t i, j;
+   __m256i r1[2];
+   gfmul_1(r1, A, B);
+   Out[0] = r1[0];
+   Out[1] = r1[1];
+   for (j = 1; j < size; j++)
+   {
+      gfmul_1(r1, A, B + j);
+      Out[j] ^= r1[0];
+      Out[j + 1] = r1[1];
+   }
+   for (i = 1; i < size; i++)
+   {
+      for (j = 0; j < size - 1; j++)
+      {
+        gfmul_1(r1, A + i, B + j);
+        Out[i + j] ^= r1[0];
+        Out[i + j + 1] ^= r1[1];
+      }
+      gfmul_1(r1, A+i, B + (size - 1));
+      Out[i + size - 1] ^= r1[0];
+      Out[i + size] = r1[1];
+   }
+}
+
+
+int main(){
+    __m256i C_sch[GFLEN*2],C[GFLEN*2],A[GFLEN],B[GFLEN];
+    uint64_t start, fin, t_sch=0, t_mul=0, t_measure=cpucycles_overhead();
+    
+    for(int i=0;i<N_TEST;i++){
+        random_wordstring((uint64_t *)A,4*GFLEN);
+        random_wordstring((uint64_t *)B,4*GFLEN);
+        
+        start = cpucycles();
+        schoolbook_mul(C_sch, A,B, GFLEN);
+        fin = cpucycles();
+        t_sch += fin-start-t_measure;
+
+        start = cpucycles();
+        GFMUL(C, A, B);
+        fin = cpucycles();
+        t_mul += fin-start-t_measure;
+        if(poly_compare_256(C, C_sch,GFLEN*2)) {
+            printf("Error: gfmul_%d produced incorrect results.\n",GFLEN);
+            return 1;
+        }
+    }
+    printf("\tCorrect.\n");
+    t_sch/=N_TEST;
+    t_mul/=N_TEST;
+    printf("\tgfmul_%d: %ld cycles\n", GFLEN, t_mul);
+    return 0;
+}
